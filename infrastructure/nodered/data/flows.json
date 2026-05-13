@@ -1,0 +1,1337 @@
+[
+  {
+    "id": "flow_ladt_ingestion",
+    "type": "tab",
+    "label": "LA-DT Ingestion (MQTT -> TimescaleDB)",
+    "disabled": false,
+    "info": "Strict timestamp-preserving ingestion for env, vibration, and power topics."
+  },
+  {
+    "id": "mqtt_broker_cfg",
+    "type": "mqtt-broker",
+    "name": "Dataset MQTT",
+    "broker": "mosquitto",
+    "port": "1883",
+    "clientid": "nodered-ladt-ingestion",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true
+  },
+  {
+    "id": "pg_cfg",
+    "type": "postgreSQLConfig",
+    "name": "TimescaleDB",
+    "host": "timescaledb",
+    "hostFieldType": "str",
+    "port": "5432",
+    "portFieldType": "str",
+    "database": "powerdetect_dataset",
+    "databaseFieldType": "str",
+    "ssl": "false",
+    "sslFieldType": "bool",
+    "max": "10",
+    "maxFieldType": "num",
+    "idle": "1000",
+    "idleFieldType": "num",
+    "connectionTimeout": "10000",
+    "connectionTimeoutFieldType": "num",
+    "user": "powerdetect",
+    "userFieldType": "str",
+    "password": "powerdetect123",
+    "passwordFieldType": "str"
+  },
+  {
+    "id": "mqtt_in_all_sensor",
+    "type": "mqtt in",
+    "z": "flow_ladt_ingestion",
+    "name": "pylon/+/+",
+    "topic": "pylon/+/+",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "mqtt_broker_cfg",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 130,
+    "y": 120,
+    "wires": [
+      [
+        "json_parse_payload"
+      ]
+    ]
+  },
+  {
+    "id": "json_parse_payload",
+    "type": "json",
+    "z": "flow_ladt_ingestion",
+    "name": "Parse JSON",
+    "property": "payload",
+    "action": "obj",
+    "pretty": false,
+    "x": 320,
+    "y": 120,
+    "wires": [
+      [
+        "fn_normalize_for_pg"
+      ]
+    ]
+  },
+  {
+    "id": "fn_normalize_for_pg",
+    "type": "function",
+    "z": "flow_ladt_ingestion",
+    "name": "Normalize + Build SQL Params",
+    "outputs": 2,
+    "noerr": 0,
+    "func": "function asFiniteNumber(val, field) {\n  const n = Number(val);\n  if (!Number.isFinite(n)) throw new Error('Invalid numeric field: ' + field);\n  return n;\n}\nfunction nestedValue(obj, key) {\n  if (obj == null || !(key in obj)) return undefined;\n  const raw = obj[key];\n  if (raw != null && typeof raw === 'object' && ('value' in raw)) return raw.value;\n  return raw;\n}\ntry {\n  if (typeof msg.topic !== 'string') throw new Error('Missing MQTT topic');\n  const match = /^pylon\\/(\\d{2})\\/(env|vibration|power)$/.exec(msg.topic);\n  if (!match) return null;\n  const nodeId = Number(match[1]);\n  const stream = match[2];\n  const payload = msg.payload;\n  if (payload == null || typeof payload !== 'object') throw new Error('Payload is not a JSON object');\n  const payloadTs = payload.timestamp;\n  if (typeof payloadTs !== 'string') throw new Error('Missing payload timestamp');\n  const tsMatch = /^(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2})$/.exec(payloadTs);\n  if (!tsMatch) throw new Error('Timestamp format must be YYYY-MM-DD HH:MM:SS');\n  const eventTimeIso = tsMatch[1]+'-'+tsMatch[2]+'-'+tsMatch[3]+'T'+tsMatch[4]+':'+tsMatch[5]+':'+tsMatch[6]+'Z';\n  const deviceName = (payload.device && payload.device.name) ? String(payload.device.name) : 'pylon_sensor_'+match[1];\n  const values = (payload.value && typeof payload.value === 'object') ? payload.value : payload;\n  if (stream === 'power') {\n    const sensorMean = asFiniteNumber(nestedValue(values, 'sensor_voltage_mean_V'), 'sensor_voltage_mean_V');\n    const sensorPeak = asFiniteNumber(nestedValue(values, 'sensor_voltage_peak_V'), 'sensor_voltage_peak_V');\n    const absCurrent = asFiniteNumber(nestedValue(values, 'absolute_current_mA'), 'absolute_current_mA');\n    const varCurrent = asFiniteNumber(nestedValue(values, 'variance_current_mA'), 'variance_current_mA');\n    const peakCurrent = asFiniteNumber(nestedValue(values, 'peak_current_mA'), 'peak_current_mA');\n    const sigmaCurrent = asFiniteNumber(nestedValue(values, 'current_variance_sigma_mA'), 'current_variance_sigma_mA');\n    const powerMw = asFiniteNumber(nestedValue(values, 'power_mW'), 'power_mW');\n    const windowSamples = Math.trunc(asFiniteNumber(nestedValue(values, 'window_samples'), 'window_samples'));\n    const attackState = String(nestedValue(values, 'attack_state') || 'none');\n    msg.query = 'INSERT INTO power_readings (event_time, topic, node_id, device_name, attack_state, sensor_voltage_mean_v, sensor_voltage_peak_v, absolute_current_ma, variance_current_ma, peak_current_ma, current_variance_sigma_ma, power_mw, window_samples) VALUES ($1::timestamptz, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT DO NOTHING';\n    msg.params = [eventTimeIso, msg.topic, nodeId, deviceName, attackState, sensorMean, sensorPeak, absCurrent, varCurrent, peakCurrent, sigmaCurrent, powerMw, windowSamples];\n    return [msg, null];\n  }\n  if (stream === 'env') {\n    const temperature = asFiniteNumber(nestedValue(values, 'temperature'), 'temperature');\n    const humidity = asFiniteNumber(nestedValue(values, 'humidity'), 'humidity');\n    msg.query = 'INSERT INTO env_readings (event_time, topic, node_id, device_name, temperature_c, humidity_pct) VALUES ($1::timestamptz, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING';\n    msg.params = [eventTimeIso, msg.topic, nodeId, deviceName, temperature, humidity];\n    return [msg, null];\n  }\n  if (stream === 'vibration') {\n    const accelX = asFiniteNumber(nestedValue(values, 'accel_x'), 'accel_x');\n    const accelY = asFiniteNumber(nestedValue(values, 'accel_y'), 'accel_y');\n    const accelZ = asFiniteNumber(nestedValue(values, 'accel_z'), 'accel_z');\n    const gyroX = asFiniteNumber(nestedValue(values, 'gyro_x'), 'gyro_x');\n    const gyroY = asFiniteNumber(nestedValue(values, 'gyro_y'), 'gyro_y');\n    const gyroZ = asFiniteNumber(nestedValue(values, 'gyro_z'), 'gyro_z');\n    msg.query = 'INSERT INTO vibration_readings (event_time, topic, node_id, device_name, accel_x_ms2, accel_y_ms2, accel_z_ms2, gyro_x_rads, gyro_y_rads, gyro_z_rads) VALUES ($1::timestamptz, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING';\n    msg.params = [eventTimeIso, msg.topic, nodeId, deviceName, accelX, accelY, accelZ, gyroX, gyroY, gyroZ];\n    return [msg, null];\n  }\n  return null;\n} catch (err) {\n  const errorMsg = {topic: msg.topic, error: err.message, payload: msg.payload};\n  node.warn('[INGEST-ERROR] ' + err.message);\n  return [null, { payload: errorMsg }];\n}\n",
+    "x": 560,
+    "y": 120,
+    "wires": [
+      [
+        "pg_insert"
+      ],
+      [
+        "debug_malformed"
+      ]
+    ]
+  },
+  {
+    "id": "pg_insert",
+    "type": "postgresql",
+    "z": "flow_ladt_ingestion",
+    "name": "Timescale Insert",
+    "query": "",
+    "postgreSQLConfig": "pg_cfg",
+    "split": false,
+    "rowsPerMsg": 1,
+    "outputs": 1,
+    "x": 800,
+    "y": 100,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "debug_malformed",
+    "type": "debug",
+    "z": "flow_ladt_ingestion",
+    "name": "Malformed Payload",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload.error",
+    "statusType": "msg",
+    "x": 810,
+    "y": 160,
+    "wires": []
+  },
+  {
+    "id": "flow_attack_control",
+    "type": "tab",
+    "label": "Attack Control (Local + Botnet)",
+    "disabled": false,
+    "info": "Manual attack orchestration for target nodes via MQTT control topics."
+  },
+  {
+    "id": "comment_header",
+    "type": "comment",
+    "z": "flow_attack_control",
+    "name": "LA-DT Attack Injection Controls",
+    "info": "",
+    "x": 210,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "comment_node1_battery",
+    "type": "comment",
+    "z": "flow_attack_control",
+    "name": "──── Section A: Node 1 Test Battery ────",
+    "info": "All 7 attack types on node 1 for isolated firmware validation.",
+    "x": 240,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "inj_n1_ddos",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "DDoS – Node 1 (120s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"ddos\",\"target_nodes\":\"1\",\"duration_s\":120}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 120,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_n1_kamikaze",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Kamikaze – Node 1 (120s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"kamikaze\",\"target_nodes\":\"1\",\"duration_s\":120}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 160,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_n1_exhaust",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Exhaustion – Node 1 (120s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"exhaustion\",\"target_nodes\":\"1\",\"duration_s\":120}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 200,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_n1_spoof_dht",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Spoofing DHT – Node 1 (120s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"spoofing_dht\",\"target_nodes\":\"1\",\"duration_s\":120}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 240,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_n1_spoof_mpu",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Spoofing MPU – Node 1 (120s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"spoofing_mpu\",\"target_nodes\":\"1\",\"duration_s\":120}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 280,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_n1_tamper",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Tampering – Node 1 (120s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"tampering\",\"target_nodes\":\"1\",\"duration_s\":120}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 320,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_n1_disconnect",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Disconnect – Node 1 (120s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"disconnect\",\"target_nodes\":\"1\",\"duration_s\":120}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 360,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "comment_single_node",
+    "type": "comment",
+    "z": "flow_attack_control",
+    "name": "──── Section B: Single Node Attacks ────",
+    "info": "One attack per type targeting different nodes.",
+    "x": 240,
+    "y": 420,
+    "wires": []
+  },
+  {
+    "id": "inj_sn_ddos",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "DDoS – Node 2 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"ddos\",\"target_nodes\":\"2\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 460,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_sn_kamikaze",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Kamikaze – Node 3 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"kamikaze\",\"target_nodes\":\"3\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 500,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_sn_exhaust",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Exhaustion – Node 4 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"exhaustion\",\"target_nodes\":\"4\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 540,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_sn_spoof_dht",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Spoofing DHT – Node 5 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"spoofing_dht\",\"target_nodes\":\"5\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 580,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_sn_spoof_mpu",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Spoofing MPU – Node 1 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"spoofing_mpu\",\"target_nodes\":\"1\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 620,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_sn_tamper",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Tampering – Node 2 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"tampering\",\"target_nodes\":\"2\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 660,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_sn_disconnect",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Disconnect – Node 3 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"disconnect\",\"target_nodes\":\"3\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 700,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "comment_botnet",
+    "type": "comment",
+    "z": "flow_attack_control",
+    "name": "──── Section C: Multi-Node (Botnet) Attacks ────",
+    "info": "Synchronized multi-node attacks.",
+    "x": 260,
+    "y": 760,
+    "wires": []
+  },
+  {
+    "id": "inj_bot_ddos",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Botnet DDoS – 1,3,5 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"ddos\",\"target_nodes\":\"1,3,5\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 240,
+    "y": 800,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_bot_kamikaze",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Botnet Kamikaze – 2,4 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"kamikaze\",\"target_nodes\":\"2,4\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 240,
+    "y": 840,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_bot_exhaust",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Botnet Exhaustion – 2,4,5 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"exhaustion\",\"target_nodes\":\"2,4,5\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 240,
+    "y": 880,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_bot_spoof",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Botnet Spoofing DHT – 1,2,3 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"spoofing_dht\",\"target_nodes\":\"1,2,3\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 240,
+    "y": 920,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_bot_tamper",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Botnet Tampering – 3,4 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"tampering\",\"target_nodes\":\"3,4\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 240,
+    "y": 960,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inj_bot_disconnect",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Botnet Disconnect – 1,5 (300s)",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"disconnect\",\"target_nodes\":\"1,5\",\"duration_s\":300}",
+    "payloadType": "json",
+    "x": 240,
+    "y": 1000,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "inject_custom_attack",
+    "type": "inject",
+    "z": "flow_attack_control",
+    "name": "Custom Attack JSON",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "{\"attack_type\":\"ddos\",\"target_nodes\":\"1,2\",\"duration_s\":120}",
+    "payloadType": "json",
+    "x": 180,
+    "y": 1060,
+    "wires": [
+      [
+        "fn_attack_dispatch"
+      ]
+    ]
+  },
+  {
+    "id": "fn_attack_dispatch",
+    "type": "function",
+    "z": "flow_attack_control",
+    "name": "Build + Dispatch Attack Commands",
+    "outputs": 2,
+    "noerr": 0,
+    "func": "try {\n  const allowedTypes = ['ddos', 'kamikaze', 'exhaustion', 'spoofing_dht', 'spoofing_mpu', 'tampering', 'disconnect'];\n  const input = msg.payload || {};\n  const attackType = String(input.attack_type || '').trim();\n  const durationSec = Number(input.duration_s);\n  const targetRaw = String(input.target_nodes || '').trim();\n  if (!allowedTypes.includes(attackType)) throw new Error('attack_type must be one of: ' + allowedTypes.join(', '));\n  if (!Number.isInteger(durationSec) || durationSec <= 0 || durationSec > 3600) throw new Error('duration_s must be an integer in [1, 3600]');\n  if (targetRaw.length === 0) throw new Error('target_nodes is required');\n  const parsed = targetRaw.split(',').map(s => s.trim()).filter(s => s.length > 0);\n  if (parsed.length === 0) throw new Error('No valid node IDs');\n  const deduped = [...new Set(parsed)];\n  const mqttMsgs = deduped.map(nodeStr => {\n    if (!/^\\d{1,2}$/.test(nodeStr)) throw new Error('Invalid node id: ' + nodeStr);\n    const nodeIdNum = Number(nodeStr);\n    if (nodeIdNum < 1 || nodeIdNum > 99) throw new Error('Node id out of range: ' + nodeStr);\n    const nodePadded = String(nodeIdNum).padStart(2, '0');\n    return { topic: 'pylon/' + nodePadded + '/control', payload: { cmd: 'attack', type: attackType, duration: durationSec } };\n  });\n  const mode = (mqttMsgs.length > 1) ? 'botnet' : 'local';\n  const summary = { payload: { event: 'attack_dispatched', mode, attack_type: attackType, duration_s: durationSec, target_nodes: deduped.join(',') } };\n  node.status({ fill: 'green', shape: 'dot', text: attackType + ' -> ' + deduped.join(',') });\n  return [mqttMsgs, summary];\n} catch (err) {\n  node.status({ fill: 'red', shape: 'ring', text: 'dispatch error' });\n  node.warn('[ATTACK-DISPATCH] ' + err.message);\n  return [null, { payload: { event: 'attack_dispatch_error', error: err.message, input: msg.payload } }];\n}\n",
+    "x": 560,
+    "y": 500,
+    "wires": [
+      [
+        "mqtt_out_attack"
+      ],
+      [
+        "debug_attack_status"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out_attack",
+    "type": "mqtt out",
+    "z": "flow_attack_control",
+    "name": "Publish Attack Commands",
+    "topic": "",
+    "qos": "0",
+    "retain": "",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "mqtt_broker_cfg",
+    "x": 840,
+    "y": 470,
+    "wires": []
+  },
+  {
+    "id": "debug_attack_status",
+    "type": "debug",
+    "z": "flow_attack_control",
+    "name": "Attack Dispatch Status",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload.event",
+    "statusType": "msg",
+    "x": 850,
+    "y": 530,
+    "wires": []
+  },
+  {
+    "id": "flow_48h_scenario",
+    "type": "tab",
+    "label": "48h A* Dataset Collection",
+    "disabled": false,
+    "info": "Automated 48-hour attack injection scenario for A* conference paper dataset."
+  },
+  {
+    "id": "comment_uniform",
+    "type": "comment",
+    "z": "flow_48h_scenario",
+    "name": "──── Scenario A: Uniform Schedule (5min/30min) ────",
+    "info": "# Scenario A: Uniform Schedule\n\n46 attacks, 5min each, uniform 30min spacing.\n\n| # | T (min) | T (h:mm) | Type | Nodes | Duration |\n|---|---------|----------|------|-------|----------|\n| 1 | 120 | 2:00 | ddos | 1 | 5min |\n| 2 | 155 | 2:35 | exhaustion | 2 | 5min |\n| 3 | 190 | 3:10 | spoofing_dht | 3 | 5min |\n| 4 | 225 | 3:45 | tampering | 4 | 5min |\n| 5 | 260 | 4:20 | kamikaze | 5 | 5min |\n| 6 | 295 | 4:55 | disconnect | 1 | 5min |\n| 7 | 360 | 6:00 | ddos | 1,3,5 | 5min |\n| 8 | 395 | 6:35 | exhaustion | 2,4,5 | 5min |\n| 9 | 430 | 7:10 | spoofing_mpu | 1,2,3 | 5min |\n| 10 | 465 | 7:45 | tampering | 3,4 | 5min |\n| 11 | 500 | 8:20 | kamikaze | 2,4 | 5min |\n| 12 | 535 | 8:55 | disconnect | 1,5 | 5min |\n| 13 | 720 | 12:00 | ddos | 2 | 5min |\n| 14 | 755 | 12:35 | exhaustion | 5 | 5min |\n| 15 | 790 | 13:10 | spoofing_mpu | 4 | 5min |\n| 16 | 825 | 13:45 | tampering | 1 | 5min |\n| 17 | 860 | 14:20 | kamikaze | 3 | 5min |\n| 18 | 895 | 14:55 | disconnect | 4 | 5min |\n| 19 | 1080 | 18:00 | ddos | 1,2 | 5min |\n| 20 | 1085 | 18:05 | exhaustion | 3,4 | 5min |\n| 21 | 1115 | 18:35 | spoofing_dht | 5 | 5min |\n| 22 | 1150 | 19:10 | kamikaze | 1 | 5min |\n| 23 | 1200 | 20:00 | tampering | 1,3,5 | 5min |\n| 24 | 1235 | 20:35 | ddos | 4 | 5min |\n| 25 | 1270 | 21:10 | disconnect | 2,3 | 5min |\n| 26 | 1440 | 24:00 | ddos | 3 | 5min |\n| 27 | 1475 | 24:35 | exhaustion | 1 | 5min |\n| 28 | 1510 | 25:10 | spoofing_dht | 2 | 5min |\n| 29 | 1545 | 25:45 | tampering | 5 | 5min |\n| 30 | 1580 | 26:20 | kamikaze | 4 | 5min |\n| 31 | 1615 | 26:55 | disconnect | 2 | 5min |\n| 32 | 1800 | 30:00 | ddos | 2,4,5 | 5min |\n| 33 | 1835 | 30:35 | exhaustion | 1,3,5 | 5min |\n| 34 | 1870 | 31:10 | spoofing_dht | 2,4 | 5min |\n| 35 | 1905 | 31:45 | kamikaze | 1,3 | 5min |\n| 36 | 1940 | 32:20 | tampering | 2,5 | 5min |\n| 37 | 1975 | 32:55 | disconnect | 3,4,5 | 5min |\n| 38 | 2160 | 36:00 | exhaustion | 3 | 5min |\n| 39 | 2195 | 36:35 | ddos | 5 | 5min |\n| 40 | 2230 | 37:10 | tampering | 3 | 5min |\n| 41 | 2265 | 37:45 | spoofing_mpu | 2 | 5min |\n| 42 | 2300 | 38:20 | kamikaze | 2 | 5min |\n| 43 | 2335 | 38:55 | disconnect | 5 | 5min |\n| 44 | 2520 | 42:00 | ddos | 1,2 | 5min |\n| 45 | 2525 | 42:05 | kamikaze | 3,4 | 5min |\n| 46 | 2555 | 42:35 | exhaustion | 1,2,3,4,5 | 5min |\n",
+    "x": 300,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "inj_uni_start",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "▶ START Uniform",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "start",
+    "payloadType": "str",
+    "x": 160,
+    "y": 100,
+    "wires": [
+      [
+        "fn_uni_start"
+      ]
+    ]
+  },
+  {
+    "id": "fn_uni_start",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Initialize Uniform",
+    "outputs": 1,
+    "noerr": 0,
+    "func": "flow.set('UNI_active', true);\nflow.set('UNI_start_ms', Date.now());\nflow.set('UNI_dispatched', {});\nnode.status({ fill: 'green', shape: 'dot', text: 'STARTED' });\nnode.warn('[UNI] Started at ' + new Date().toISOString());\nreturn { payload: { event: 'scenario_started', scenario: 'UNI', timestamp: new Date().toISOString() } };",
+    "x": 400,
+    "y": 100,
+    "wires": [
+      [
+        "debug_log_a"
+      ]
+    ]
+  },
+  {
+    "id": "inj_uni_stop",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "■ STOP Uniform",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "stop",
+    "payloadType": "str",
+    "x": 155,
+    "y": 150,
+    "wires": [
+      [
+        "fn_uni_stop"
+      ]
+    ]
+  },
+  {
+    "id": "fn_uni_stop",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Stop Uniform",
+    "outputs": 1,
+    "noerr": 0,
+    "func": "flow.set('UNI_active', false);\nnode.status({ fill: 'red', shape: 'ring', text: 'STOPPED' });\nnode.warn('[UNI] Manually stopped.');\nreturn { payload: { event: 'scenario_stopped', scenario: 'UNI', timestamp: new Date().toISOString() } };",
+    "x": 390,
+    "y": 150,
+    "wires": [
+      [
+        "debug_log_a"
+      ]
+    ]
+  },
+  {
+    "id": "inj_uni_poll",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "Poll (5s) ↻",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "5",
+    "topic": "",
+    "payload": "tick",
+    "payloadType": "str",
+    "x": 145,
+    "y": 240,
+    "wires": [
+      [
+        "fn_uni_sched"
+      ]
+    ]
+  },
+  {
+    "id": "fn_uni_sched",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Uniform Scheduler (State Machine)",
+    "outputs": 2,
+    "noerr": 0,
+    "func": "const schedule = [[120,\"ddos\",\"1\",300],[155,\"exhaustion\",\"2\",300],[190,\"spoofing_dht\",\"3\",300],[225,\"tampering\",\"4\",300],[260,\"kamikaze\",\"5\",300],[295,\"disconnect\",\"1\",300],[360,\"ddos\",\"1,3,5\",300],[395,\"exhaustion\",\"2,4,5\",300],[430,\"spoofing_mpu\",\"1,2,3\",300],[465,\"tampering\",\"3,4\",300],[500,\"kamikaze\",\"2,4\",300],[535,\"disconnect\",\"1,5\",300],[720,\"ddos\",\"2\",300],[755,\"exhaustion\",\"5\",300],[790,\"spoofing_mpu\",\"4\",300],[825,\"tampering\",\"1\",300],[860,\"kamikaze\",\"3\",300],[895,\"disconnect\",\"4\",300],[1080,\"ddos\",\"1,2\",300],[1085,\"exhaustion\",\"3,4\",300],[1115,\"spoofing_dht\",\"5\",300],[1150,\"kamikaze\",\"1\",300],[1200,\"tampering\",\"1,3,5\",300],[1235,\"ddos\",\"4\",300],[1270,\"disconnect\",\"2,3\",300],[1440,\"ddos\",\"3\",300],[1475,\"exhaustion\",\"1\",300],[1510,\"spoofing_dht\",\"2\",300],[1545,\"tampering\",\"5\",300],[1580,\"kamikaze\",\"4\",300],[1615,\"disconnect\",\"2\",300],[1800,\"ddos\",\"2,4,5\",300],[1835,\"exhaustion\",\"1,3,5\",300],[1870,\"spoofing_dht\",\"2,4\",300],[1905,\"kamikaze\",\"1,3\",300],[1940,\"tampering\",\"2,5\",300],[1975,\"disconnect\",\"3,4,5\",300],[2160,\"exhaustion\",\"3\",300],[2195,\"ddos\",\"5\",300],[2230,\"tampering\",\"3\",300],[2265,\"spoofing_mpu\",\"2\",300],[2300,\"kamikaze\",\"2\",300],[2335,\"disconnect\",\"5\",300],[2520,\"ddos\",\"1,2\",300],[2525,\"kamikaze\",\"3,4\",300],[2555,\"exhaustion\",\"1,2,3,4,5\",300]];\nif (!flow.get('UNI_active')) return null;\nconst startTime = flow.get('UNI_start_ms');\nif (!startTime) return null;\nconst elapsedMs = Date.now() - startTime;\nconst elapsedMin = elapsedMs / 60000;\nconst dispatched = flow.get('UNI_dispatched') || {};\nif (elapsedMin >= 2880) {\n  flow.set('UNI_active', false);\n  node.status({ fill: 'blue', shape: 'ring', text: 'COMPLETE (' + (2880/60) + 'h)' });\n  node.warn('[UNI] Collection complete after ' + (2880/60) + ' hours.');\n  return { payload: { event: 'scenario_complete', elapsed_h: (elapsedMin/60).toFixed(1) } };\n}\nconst msgs = [];\nfor (let i = 0; i < schedule.length; i++) {\n  const key = 'evt_' + i;\n  if (dispatched[key]) continue;\n  const [triggerMin, attackType, targetNodes, durationS] = schedule[i];\n  if (elapsedMin >= Number(triggerMin)) {\n    dispatched[key] = true;\n    msgs.push({ payload: { attack_type: attackType, target_nodes: targetNodes, duration_s: durationS } });\n    node.warn('[UNI] T+' + triggerMin + 'min: ' + attackType + ' -> nodes ' + targetNodes + ' (' + durationS + 's)');\n  }\n}\nflow.set('UNI_dispatched', dispatched);\nconst pct = ((elapsedMin / 2880) * 100).toFixed(1);\nconst hh = Math.floor(elapsedMin / 60);\nconst mm = Math.floor(elapsedMin % 60);\nconst nextIdx = schedule.findIndex((s, i) => !dispatched['evt_' + i]);\nconst nextInfo = nextIdx >= 0 ? ' | Next: ' + schedule[nextIdx][1] + ' @T+' + schedule[nextIdx][0] + 'min' : ' | All dispatched';\nnode.status({ fill: 'green', shape: 'dot', text: pct + '% T+' + hh + 'h' + String(mm).padStart(2,'0') + nextInfo });\nif (msgs.length > 0) return [msgs, null];\nreturn null;",
+    "x": 430,
+    "y": 240,
+    "wires": [
+      [
+        "fn_dispatch_a"
+      ],
+      [
+        "debug_log_a"
+      ]
+    ]
+  },
+  {
+    "id": "fn_dispatch_a",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Build + Dispatch",
+    "outputs": 2,
+    "noerr": 0,
+    "func": "try {\n  const allowedTypes = ['ddos', 'kamikaze', 'exhaustion', 'spoofing_dht', 'spoofing_mpu', 'tampering', 'disconnect'];\n  const input = msg.payload || {};\n  const attackType = String(input.attack_type || '').trim();\n  const durationSec = Number(input.duration_s);\n  const targetRaw = String(input.target_nodes || '').trim();\n  if (!allowedTypes.includes(attackType)) throw new Error('attack_type must be one of: ' + allowedTypes.join(', '));\n  if (!Number.isInteger(durationSec) || durationSec <= 0 || durationSec > 3600) throw new Error('duration_s must be an integer in [1, 3600]');\n  if (targetRaw.length === 0) throw new Error('target_nodes is required');\n  const parsed = targetRaw.split(',').map(s => s.trim()).filter(s => s.length > 0);\n  if (parsed.length === 0) throw new Error('No valid node IDs');\n  const deduped = [...new Set(parsed)];\n  const mqttMsgs = deduped.map(nodeStr => {\n    if (!/^\\d{1,2}$/.test(nodeStr)) throw new Error('Invalid node id: ' + nodeStr);\n    const nodeIdNum = Number(nodeStr);\n    if (nodeIdNum < 1 || nodeIdNum > 99) throw new Error('Node id out of range: ' + nodeStr);\n    const nodePadded = String(nodeIdNum).padStart(2, '0');\n    return { topic: 'pylon/' + nodePadded + '/control', payload: { cmd: 'attack', type: attackType, duration: durationSec } };\n  });\n  const mode = (mqttMsgs.length > 1) ? 'botnet' : 'local';\n  const summary = { payload: { event: 'attack_dispatched', mode, attack_type: attackType, duration_s: durationSec, target_nodes: deduped.join(',') } };\n  node.status({ fill: 'green', shape: 'dot', text: attackType + ' -> ' + deduped.join(',') });\n  return [mqttMsgs, summary];\n} catch (err) {\n  node.status({ fill: 'red', shape: 'ring', text: 'dispatch error' });\n  node.warn('[ATTACK-DISPATCH] ' + err.message);\n  return [null, { payload: { event: 'attack_dispatch_error', error: err.message, input: msg.payload } }];\n}\n",
+    "x": 720,
+    "y": 220,
+    "wires": [
+      [
+        "mqtt_out_a"
+      ],
+      [
+        "debug_log_a"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out_a",
+    "type": "mqtt out",
+    "z": "flow_48h_scenario",
+    "name": "Publish Attack",
+    "topic": "",
+    "qos": "0",
+    "retain": "",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "mqtt_broker_cfg",
+    "x": 950,
+    "y": 200,
+    "wires": []
+  },
+  {
+    "id": "debug_log_a",
+    "type": "debug",
+    "z": "flow_48h_scenario",
+    "name": "Uniform Log",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload.event",
+    "statusType": "msg",
+    "x": 760,
+    "y": 300,
+    "wires": []
+  },
+  {
+    "id": "comment_stochastic",
+    "type": "comment",
+    "z": "flow_48h_scenario",
+    "name": "──── Scenario B: Stochastic A* Schedule (variable timing) ────",
+    "info": "# Scenario B: Stochastic A* Schedule\n\n40 attacks with stochastic inter-arrival (8–148min gaps), variable durations (2–10min), temporal clustering, and diurnal patterns.\n\n| # | T (min) | T (h:mm) | Type | Nodes | Duration |\n|---|---------|----------|------|-------|----------|\n| 1 | 150 | 2:30 | spoofing_dht | 2 | 7min |\n| 2 | 195 | 3:15 | ddos | 4 | 7min |\n| 3 | 240 | 4:00 | spoofing_mpu | 1 | 10min |\n| 4 | 330 | 5:30 | exhaustion | 3 | 10min |\n| 5 | 365 | 6:05 | tampering | 5 | 9min |\n| 6 | 465 | 7:45 | disconnect | 1 | 7min |\n| 7 | 510 | 8:30 | ddos | 2 | 7min |\n| 8 | 525 | 8:45 | kamikaze | 2 | 5min |\n| 9 | 600 | 10:00 | ddos | 1,3,5 | 5min |\n| 10 | 650 | 10:50 | spoofing_dht | 4 | 3min |\n| 11 | 720 | 12:00 | exhaustion | 2,4 | 10min |\n| 12 | 742 | 12:22 | tampering | 1 | 3min |\n| 13 | 840 | 14:00 | kamikaze | 3 | 5min |\n| 14 | 930 | 15:30 | disconnect | 4 | 2min |\n| 15 | 1080 | 18:00 | spoofing_mpu | 5 | 3min |\n| 16 | 1170 | 19:30 | ddos | 1 | 7min |\n| 17 | 1260 | 21:00 | tampering | 3,5 | 5min |\n| 18 | 1380 | 23:00 | exhaustion | 5 | 10min |\n| 19 | 1530 | 25:30 | ddos | 3 | 5min |\n| 20 | 1560 | 26:00 | spoofing_dht | 1 | 2min |\n| 21 | 1570 | 26:10 | kamikaze | 5 | 7min |\n| 22 | 1650 | 27:30 | exhaustion | 1,2,3 | 10min |\n| 23 | 1700 | 28:20 | disconnect | 3 | 3min |\n| 24 | 1740 | 29:00 | tampering | 2 | 5min |\n| 25 | 1830 | 30:30 | ddos | 2,4 | 7min |\n| 26 | 1920 | 32:00 | spoofing_mpu | 3 | 3min |\n| 27 | 1980 | 33:00 | exhaustion | 1 | 10min |\n| 28 | 2000 | 33:20 | ddos | 1 | 5min |\n| 29 | 2070 | 34:30 | kamikaze | 2,4 | 5min |\n| 30 | 2100 | 35:00 | disconnect | 5 | 2min |\n| 31 | 2160 | 36:00 | tampering | 1,3,5 | 7min |\n| 32 | 2250 | 37:30 | spoofing_dht | 4 | 3min |\n| 33 | 2280 | 38:00 | ddos | 5 | 5min |\n| 34 | 2370 | 39:30 | spoofing_mpu | 1,2 | 3min |\n| 35 | 2400 | 40:00 | exhaustion | 4 | 10min |\n| 36 | 2490 | 41:30 | kamikaze | 1 | 5min |\n| 37 | 2535 | 42:15 | ddos | 3,5 | 7min |\n| 38 | 2580 | 43:00 | disconnect | 2 | 2min |\n| 39 | 2640 | 44:00 | ddos | 1,2,3,4 | 5min |\n| 40 | 2700 | 45:00 | exhaustion | 1,2,3,4,5 | 7min |\n",
+    "x": 340,
+    "y": 400,
+    "wires": []
+  },
+  {
+    "id": "inj_sto_start",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "▶ START Stochastic A*",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "start",
+    "payloadType": "str",
+    "x": 170,
+    "y": 460,
+    "wires": [
+      [
+        "fn_sto_start"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sto_start",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Initialize Stochastic",
+    "outputs": 1,
+    "noerr": 0,
+    "func": "flow.set('STO_active', true);\nflow.set('STO_start_ms', Date.now());\nflow.set('STO_dispatched', {});\nnode.status({ fill: 'green', shape: 'dot', text: 'STARTED' });\nnode.warn('[STO] Started at ' + new Date().toISOString());\nreturn { payload: { event: 'scenario_started', scenario: 'STO', timestamp: new Date().toISOString() } };",
+    "x": 410,
+    "y": 460,
+    "wires": [
+      [
+        "debug_log_b"
+      ]
+    ]
+  },
+  {
+    "id": "inj_sto_stop",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "■ STOP Stochastic",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "stop",
+    "payloadType": "str",
+    "x": 160,
+    "y": 510,
+    "wires": [
+      [
+        "fn_sto_stop"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sto_stop",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Stop Stochastic",
+    "outputs": 1,
+    "noerr": 0,
+    "func": "flow.set('STO_active', false);\nnode.status({ fill: 'red', shape: 'ring', text: 'STOPPED' });\nnode.warn('[STO] Manually stopped.');\nreturn { payload: { event: 'scenario_stopped', scenario: 'STO', timestamp: new Date().toISOString() } };",
+    "x": 400,
+    "y": 510,
+    "wires": [
+      [
+        "debug_log_b"
+      ]
+    ]
+  },
+  {
+    "id": "inj_sto_poll",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "Poll (5s) ↻",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "5",
+    "topic": "",
+    "payload": "tick",
+    "payloadType": "str",
+    "x": 145,
+    "y": 600,
+    "wires": [
+      [
+        "fn_sto_sched"
+      ]
+    ]
+  },
+  {
+    "id": "fn_sto_sched",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Stochastic A* Scheduler (State Machine)",
+    "outputs": 2,
+    "noerr": 0,
+    "func": "const schedule = [[150,\"spoofing_dht\",\"2\",420],[195,\"ddos\",\"4\",420],[240,\"spoofing_mpu\",\"1\",600],[330,\"exhaustion\",\"3\",600],[365,\"tampering\",\"5\",540],[465,\"disconnect\",\"1\",420],[510,\"ddos\",\"2\",420],[525,\"kamikaze\",\"2\",300],[600,\"ddos\",\"1,3,5\",300],[650,\"spoofing_dht\",\"4\",180],[720,\"exhaustion\",\"2,4\",600],[742,\"tampering\",\"1\",180],[840,\"kamikaze\",\"3\",300],[930,\"disconnect\",\"4\",120],[1080,\"spoofing_mpu\",\"5\",180],[1170,\"ddos\",\"1\",420],[1260,\"tampering\",\"3,5\",300],[1380,\"exhaustion\",\"5\",600],[1530,\"ddos\",\"3\",300],[1560,\"spoofing_dht\",\"1\",120],[1570,\"kamikaze\",\"5\",420],[1650,\"exhaustion\",\"1,2,3\",600],[1700,\"disconnect\",\"3\",180],[1740,\"tampering\",\"2\",300],[1830,\"ddos\",\"2,4\",420],[1920,\"spoofing_mpu\",\"3\",180],[1980,\"exhaustion\",\"1\",600],[2000,\"ddos\",\"1\",300],[2070,\"kamikaze\",\"2,4\",300],[2100,\"disconnect\",\"5\",120],[2160,\"tampering\",\"1,3,5\",420],[2250,\"spoofing_dht\",\"4\",180],[2280,\"ddos\",\"5\",300],[2370,\"spoofing_mpu\",\"1,2\",180],[2400,\"exhaustion\",\"4\",600],[2490,\"kamikaze\",\"1\",300],[2535,\"ddos\",\"3,5\",420],[2580,\"disconnect\",\"2\",120],[2640,\"ddos\",\"1,2,3,4\",300],[2700,\"exhaustion\",\"1,2,3,4,5\",420]];\nif (!flow.get('STO_active')) return null;\nconst startTime = flow.get('STO_start_ms');\nif (!startTime) return null;\nconst elapsedMs = Date.now() - startTime;\nconst elapsedMin = elapsedMs / 60000;\nconst dispatched = flow.get('STO_dispatched') || {};\nif (elapsedMin >= 2880) {\n  flow.set('STO_active', false);\n  node.status({ fill: 'blue', shape: 'ring', text: 'COMPLETE (' + (2880/60) + 'h)' });\n  node.warn('[STO] Collection complete after ' + (2880/60) + ' hours.');\n  return { payload: { event: 'scenario_complete', elapsed_h: (elapsedMin/60).toFixed(1) } };\n}\nconst msgs = [];\nfor (let i = 0; i < schedule.length; i++) {\n  const key = 'evt_' + i;\n  if (dispatched[key]) continue;\n  const [triggerMin, attackType, targetNodes, durationS] = schedule[i];\n  if (elapsedMin >= Number(triggerMin)) {\n    dispatched[key] = true;\n    msgs.push({ payload: { attack_type: attackType, target_nodes: targetNodes, duration_s: durationS } });\n    node.warn('[STO] T+' + triggerMin + 'min: ' + attackType + ' -> nodes ' + targetNodes + ' (' + durationS + 's)');\n  }\n}\nflow.set('STO_dispatched', dispatched);\nconst pct = ((elapsedMin / 2880) * 100).toFixed(1);\nconst hh = Math.floor(elapsedMin / 60);\nconst mm = Math.floor(elapsedMin % 60);\nconst nextIdx = schedule.findIndex((s, i) => !dispatched['evt_' + i]);\nconst nextInfo = nextIdx >= 0 ? ' | Next: ' + schedule[nextIdx][1] + ' @T+' + schedule[nextIdx][0] + 'min' : ' | All dispatched';\nnode.status({ fill: 'green', shape: 'dot', text: pct + '% T+' + hh + 'h' + String(mm).padStart(2,'0') + nextInfo });\nif (msgs.length > 0) return [msgs, null];\nreturn null;",
+    "x": 440,
+    "y": 600,
+    "wires": [
+      [
+        "fn_dispatch_b"
+      ],
+      [
+        "debug_log_b"
+      ]
+    ]
+  },
+  {
+    "id": "fn_dispatch_b",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Build + Dispatch",
+    "outputs": 2,
+    "noerr": 0,
+    "func": "try {\n  const allowedTypes = ['ddos', 'kamikaze', 'exhaustion', 'spoofing_dht', 'spoofing_mpu', 'tampering', 'disconnect'];\n  const input = msg.payload || {};\n  const attackType = String(input.attack_type || '').trim();\n  const durationSec = Number(input.duration_s);\n  const targetRaw = String(input.target_nodes || '').trim();\n  if (!allowedTypes.includes(attackType)) throw new Error('attack_type must be one of: ' + allowedTypes.join(', '));\n  if (!Number.isInteger(durationSec) || durationSec <= 0 || durationSec > 3600) throw new Error('duration_s must be an integer in [1, 3600]');\n  if (targetRaw.length === 0) throw new Error('target_nodes is required');\n  const parsed = targetRaw.split(',').map(s => s.trim()).filter(s => s.length > 0);\n  if (parsed.length === 0) throw new Error('No valid node IDs');\n  const deduped = [...new Set(parsed)];\n  const mqttMsgs = deduped.map(nodeStr => {\n    if (!/^\\d{1,2}$/.test(nodeStr)) throw new Error('Invalid node id: ' + nodeStr);\n    const nodeIdNum = Number(nodeStr);\n    if (nodeIdNum < 1 || nodeIdNum > 99) throw new Error('Node id out of range: ' + nodeStr);\n    const nodePadded = String(nodeIdNum).padStart(2, '0');\n    return { topic: 'pylon/' + nodePadded + '/control', payload: { cmd: 'attack', type: attackType, duration: durationSec } };\n  });\n  const mode = (mqttMsgs.length > 1) ? 'botnet' : 'local';\n  const summary = { payload: { event: 'attack_dispatched', mode, attack_type: attackType, duration_s: durationSec, target_nodes: deduped.join(',') } };\n  node.status({ fill: 'green', shape: 'dot', text: attackType + ' -> ' + deduped.join(',') });\n  return [mqttMsgs, summary];\n} catch (err) {\n  node.status({ fill: 'red', shape: 'ring', text: 'dispatch error' });\n  node.warn('[ATTACK-DISPATCH] ' + err.message);\n  return [null, { payload: { event: 'attack_dispatch_error', error: err.message, input: msg.payload } }];\n}\n",
+    "x": 720,
+    "y": 580,
+    "wires": [
+      [
+        "mqtt_out_b"
+      ],
+      [
+        "debug_log_b"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out_b",
+    "type": "mqtt out",
+    "z": "flow_48h_scenario",
+    "name": "Publish Attack",
+    "topic": "",
+    "qos": "0",
+    "retain": "",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "mqtt_broker_cfg",
+    "x": 950,
+    "y": 560,
+    "wires": []
+  },
+  {
+    "id": "debug_log_b",
+    "type": "debug",
+    "z": "flow_48h_scenario",
+    "name": "Stochastic Log",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload.event",
+    "statusType": "msg",
+    "x": 770,
+    "y": 660,
+    "wires": []
+  },
+  {
+    "id": "comment_train",
+    "type": "comment",
+    "z": "flow_48h_scenario",
+    "name": "──── Scenario C: High-Density Training (12 hours) ────",
+    "info": "# Scenario C: High-Density Training\n\n58 dense attacks over 12 hours designed to generate a robust training dataset for AI OOD evaluation.\n\n| # | T (min) | T (h:mm) | Type | Nodes | Duration |\n|---|---------|----------|------|-------|----------|\n| 1 | 5 | 0:05 | ddos | 1 | 5min |\n| 2 | 15 | 0:15 | exhaustion | 2 | 5min |\n| 3 | 25 | 0:25 | spoofing_dht | 3 | 3min |\n| 4 | 35 | 0:35 | tampering | 4 | 5min |\n| 5 | 45 | 0:45 | kamikaze | 5 | 5min |\n| 6 | 60 | 1:00 | disconnect | 1 | 3min |\n| 7 | 75 | 1:15 | ddos | 1,2 | 5min |\n| 8 | 85 | 1:25 | exhaustion | 3,4 | 5min |\n| 9 | 95 | 1:35 | spoofing_mpu | 5 | 3min |\n| 10 | 105 | 1:45 | tampering | 1,3,5 | 5min |\n| 11 | 120 | 2:00 | kamikaze | 2,4 | 5min |\n| 12 | 135 | 2:15 | disconnect | 2 | 3min |\n| 13 | 145 | 2:25 | ddos | 3 | 5min |\n| 14 | 155 | 2:35 | exhaustion | 1 | 5min |\n| 15 | 165 | 2:45 | spoofing_dht | 2 | 3min |\n| 16 | 175 | 2:55 | tampering | 5 | 5min |\n| 17 | 185 | 3:05 | kamikaze | 4 | 5min |\n| 18 | 200 | 3:20 | disconnect | 3 | 3min |\n| 19 | 215 | 3:35 | ddos | 2,4,5 | 5min |\n| 20 | 225 | 3:45 | exhaustion | 1,3,5 | 5min |\n| 21 | 235 | 3:55 | spoofing_mpu | 1,2 | 3min |\n| 22 | 245 | 4:05 | tampering | 2,5 | 5min |\n| 23 | 260 | 4:20 | kamikaze | 1,3 | 5min |\n| 24 | 275 | 4:35 | disconnect | 4 | 3min |\n| 25 | 285 | 4:45 | ddos | 1,2,3,4,5 | 5min |\n| 26 | 300 | 5:00 | exhaustion | 1,2,3,4,5 | 5min |\n| 27 | 315 | 5:15 | tampering | 1,2,3,4,5 | 5min |\n| 28 | 330 | 5:30 | disconnect | 5 | 3min |\n| 29 | 345 | 5:45 | kamikaze | 1,2,3,4,5 | 5min |\n| 30 | 365 | 6:05 | ddos | 2,3 | 5min |\n| 31 | 375 | 6:15 | exhaustion | 1,5 | 5min |\n| 32 | 385 | 6:25 | spoofing_dht | 4 | 3min |\n| 33 | 395 | 6:35 | tampering | 2 | 5min |\n| 34 | 405 | 6:45 | kamikaze | 1 | 5min |\n| 35 | 420 | 7:00 | disconnect | 5 | 3min |\n| 36 | 435 | 7:15 | ddos | 3,4 | 5min |\n| 37 | 445 | 7:25 | exhaustion | 1,2 | 5min |\n| 38 | 455 | 7:35 | spoofing_mpu | 3 | 3min |\n| 39 | 465 | 7:45 | tampering | 4,5 | 5min |\n| 40 | 480 | 8:00 | kamikaze | 3,5 | 5min |\n| 41 | 495 | 8:15 | disconnect | 1,2 | 3min |\n| 42 | 505 | 8:25 | ddos | 1,4,5 | 5min |\n| 43 | 515 | 8:35 | exhaustion | 2,3,4 | 5min |\n| 44 | 525 | 8:45 | spoofing_dht | 1,5 | 3min |\n| 45 | 535 | 8:55 | tampering | 1,4 | 5min |\n| 46 | 545 | 9:05 | kamikaze | 2,5 | 5min |\n| 47 | 560 | 9:20 | disconnect | 3,4 | 3min |\n| 48 | 575 | 9:35 | ddos | 1,2,4,5 | 5min |\n| 49 | 585 | 9:45 | exhaustion | 1,3,4,5 | 5min |\n| 50 | 595 | 9:55 | spoofing_mpu | 2,4 | 3min |\n| 51 | 605 | 10:05 | tampering | 1,2,3,5 | 5min |\n| 52 | 620 | 10:20 | kamikaze | 1,2,4 | 5min |\n| 53 | 635 | 10:35 | disconnect | 1,5 | 3min |\n| 54 | 645 | 10:45 | ddos | 1,2,3,4,5 | 5min |\n| 55 | 660 | 11:00 | exhaustion | 1,2,3,4,5 | 5min |\n| 56 | 675 | 11:15 | tampering | 1,2,3,4,5 | 5min |\n| 57 | 690 | 11:30 | disconnect | 1,2,3,4,5 | 3min |\n| 58 | 705 | 11:45 | kamikaze | 1,2,3,4,5 | 5min |\n",
+    "x": 320,
+    "y": 760,
+    "wires": []
+  },
+  {
+    "id": "inj_trn_start",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "▶ START High-Density Training",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "start",
+    "payloadType": "str",
+    "x": 170,
+    "y": 820,
+    "wires": [
+      [
+        "fn_trn_start"
+      ]
+    ]
+  },
+  {
+    "id": "fn_trn_start",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Initialize Train",
+    "outputs": 1,
+    "noerr": 0,
+    "func": "flow.set('TRN_active', true);\nflow.set('TRN_start_ms', Date.now());\nflow.set('TRN_dispatched', {});\nnode.status({ fill: 'green', shape: 'dot', text: 'STARTED' });\nnode.warn('[TRN] Started at ' + new Date().toISOString());\nreturn { payload: { event: 'scenario_started', scenario: 'TRN', timestamp: new Date().toISOString() } };",
+    "x": 410,
+    "y": 820,
+    "wires": [
+      [
+        "debug_log_c"
+      ]
+    ]
+  },
+  {
+    "id": "inj_trn_stop",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "■ STOP Training",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "0.1",
+    "topic": "",
+    "payload": "stop",
+    "payloadType": "str",
+    "x": 160,
+    "y": 870,
+    "wires": [
+      [
+        "fn_trn_stop"
+      ]
+    ]
+  },
+  {
+    "id": "fn_trn_stop",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Stop Train",
+    "outputs": 1,
+    "noerr": 0,
+    "func": "flow.set('TRN_active', false);\nnode.status({ fill: 'red', shape: 'ring', text: 'STOPPED' });\nnode.warn('[TRN] Manually stopped.');\nreturn { payload: { event: 'scenario_stopped', scenario: 'TRN', timestamp: new Date().toISOString() } };",
+    "x": 400,
+    "y": 870,
+    "wires": [
+      [
+        "debug_log_c"
+      ]
+    ]
+  },
+  {
+    "id": "inj_trn_poll",
+    "type": "inject",
+    "z": "flow_48h_scenario",
+    "name": "Poll (5s) ↻",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": false,
+    "onceDelay": "5",
+    "topic": "",
+    "payload": "tick",
+    "payloadType": "str",
+    "x": 145,
+    "y": 960,
+    "wires": [
+      [
+        "fn_trn_sched"
+      ]
+    ]
+  },
+  {
+    "id": "fn_trn_sched",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Training Scheduler (State Machine)",
+    "outputs": 2,
+    "noerr": 0,
+    "func": "const schedule = [[5,\"ddos\",\"1\",300],[15,\"exhaustion\",\"2\",300],[25,\"spoofing_dht\",\"3\",180],[35,\"tampering\",\"4\",300],[45,\"kamikaze\",\"5\",300],[60,\"disconnect\",\"1\",180],[75,\"ddos\",\"1,2\",300],[85,\"exhaustion\",\"3,4\",300],[95,\"spoofing_mpu\",\"5\",180],[105,\"tampering\",\"1,3,5\",300],[120,\"kamikaze\",\"2,4\",300],[135,\"disconnect\",\"2\",180],[145,\"ddos\",\"3\",300],[155,\"exhaustion\",\"1\",300],[165,\"spoofing_dht\",\"2\",180],[175,\"tampering\",\"5\",300],[185,\"kamikaze\",\"4\",300],[200,\"disconnect\",\"3\",180],[215,\"ddos\",\"2,4,5\",300],[225,\"exhaustion\",\"1,3,5\",300],[235,\"spoofing_mpu\",\"1,2\",180],[245,\"tampering\",\"2,5\",300],[260,\"kamikaze\",\"1,3\",300],[275,\"disconnect\",\"4\",180],[285,\"ddos\",\"1,2,3,4,5\",300],[300,\"exhaustion\",\"1,2,3,4,5\",300],[315,\"tampering\",\"1,2,3,4,5\",300],[330,\"disconnect\",\"5\",180],[345,\"kamikaze\",\"1,2,3,4,5\",300],[365,\"ddos\",\"2,3\",300],[375,\"exhaustion\",\"1,5\",300],[385,\"spoofing_dht\",\"4\",180],[395,\"tampering\",\"2\",300],[405,\"kamikaze\",\"1\",300],[420,\"disconnect\",\"5\",180],[435,\"ddos\",\"3,4\",300],[445,\"exhaustion\",\"1,2\",300],[455,\"spoofing_mpu\",\"3\",180],[465,\"tampering\",\"4,5\",300],[480,\"kamikaze\",\"3,5\",300],[495,\"disconnect\",\"1,2\",180],[505,\"ddos\",\"1,4,5\",300],[515,\"exhaustion\",\"2,3,4\",300],[525,\"spoofing_dht\",\"1,5\",180],[535,\"tampering\",\"1,4\",300],[545,\"kamikaze\",\"2,5\",300],[560,\"disconnect\",\"3,4\",180],[575,\"ddos\",\"1,2,4,5\",300],[585,\"exhaustion\",\"1,3,4,5\",300],[595,\"spoofing_mpu\",\"2,4\",180],[605,\"tampering\",\"1,2,3,5\",300],[620,\"kamikaze\",\"1,2,4\",300],[635,\"disconnect\",\"1,5\",180],[645,\"ddos\",\"1,2,3,4,5\",300],[660,\"exhaustion\",\"1,2,3,4,5\",300],[675,\"tampering\",\"1,2,3,4,5\",300],[690,\"disconnect\",\"1,2,3,4,5\",180],[705,\"kamikaze\",\"1,2,3,4,5\",300]];\nif (!flow.get('TRN_active')) return null;\nconst startTime = flow.get('TRN_start_ms');\nif (!startTime) return null;\nconst elapsedMs = Date.now() - startTime;\nconst elapsedMin = elapsedMs / 60000;\nconst dispatched = flow.get('TRN_dispatched') || {};\nif (elapsedMin >= 720) {\n  flow.set('TRN_active', false);\n  node.status({ fill: 'blue', shape: 'ring', text: 'COMPLETE (' + (720/60) + 'h)' });\n  node.warn('[TRN] Collection complete after ' + (720/60) + ' hours.');\n  return { payload: { event: 'scenario_complete', elapsed_h: (elapsedMin/60).toFixed(1) } };\n}\nconst msgs = [];\nfor (let i = 0; i < schedule.length; i++) {\n  const key = 'evt_' + i;\n  if (dispatched[key]) continue;\n  const [triggerMin, attackType, targetNodes, durationS] = schedule[i];\n  if (elapsedMin >= Number(triggerMin)) {\n    dispatched[key] = true;\n    msgs.push({ payload: { attack_type: attackType, target_nodes: targetNodes, duration_s: durationS } });\n    node.warn('[TRN] T+' + triggerMin + 'min: ' + attackType + ' -> nodes ' + targetNodes + ' (' + durationS + 's)');\n  }\n}\nflow.set('TRN_dispatched', dispatched);\nconst pct = ((elapsedMin / 720) * 100).toFixed(1);\nconst hh = Math.floor(elapsedMin / 60);\nconst mm = Math.floor(elapsedMin % 60);\nconst nextIdx = schedule.findIndex((s, i) => !dispatched['evt_' + i]);\nconst nextInfo = nextIdx >= 0 ? ' | Next: ' + schedule[nextIdx][1] + ' @T+' + schedule[nextIdx][0] + 'min' : ' | All dispatched';\nnode.status({ fill: 'green', shape: 'dot', text: pct + '% T+' + hh + 'h' + String(mm).padStart(2,'0') + nextInfo });\nif (msgs.length > 0) return [msgs, null];\nreturn null;",
+    "x": 440,
+    "y": 960,
+    "wires": [
+      [
+        "fn_dispatch_c"
+      ],
+      [
+        "debug_log_c"
+      ]
+    ]
+  },
+  {
+    "id": "fn_dispatch_c",
+    "type": "function",
+    "z": "flow_48h_scenario",
+    "name": "Build + Dispatch",
+    "outputs": 2,
+    "noerr": 0,
+    "func": "try {\n  const allowedTypes = ['ddos', 'kamikaze', 'exhaustion', 'spoofing_dht', 'spoofing_mpu', 'tampering', 'disconnect'];\n  const input = msg.payload || {};\n  const attackType = String(input.attack_type || '').trim();\n  const durationSec = Number(input.duration_s);\n  const targetRaw = String(input.target_nodes || '').trim();\n  if (!allowedTypes.includes(attackType)) throw new Error('attack_type must be one of: ' + allowedTypes.join(', '));\n  if (!Number.isInteger(durationSec) || durationSec <= 0 || durationSec > 3600) throw new Error('duration_s must be an integer in [1, 3600]');\n  if (targetRaw.length === 0) throw new Error('target_nodes is required');\n  const parsed = targetRaw.split(',').map(s => s.trim()).filter(s => s.length > 0);\n  if (parsed.length === 0) throw new Error('No valid node IDs');\n  const deduped = [...new Set(parsed)];\n  const mqttMsgs = deduped.map(nodeStr => {\n    if (!/^\\d{1,2}$/.test(nodeStr)) throw new Error('Invalid node id: ' + nodeStr);\n    const nodeIdNum = Number(nodeStr);\n    if (nodeIdNum < 1 || nodeIdNum > 99) throw new Error('Node id out of range: ' + nodeStr);\n    const nodePadded = String(nodeIdNum).padStart(2, '0');\n    return { topic: 'pylon/' + nodePadded + '/control', payload: { cmd: 'attack', type: attackType, duration: durationSec } };\n  });\n  const mode = (mqttMsgs.length > 1) ? 'botnet' : 'local';\n  const summary = { payload: { event: 'attack_dispatched', mode, attack_type: attackType, duration_s: durationSec, target_nodes: deduped.join(',') } };\n  node.status({ fill: 'green', shape: 'dot', text: attackType + ' -> ' + deduped.join(',') });\n  return [mqttMsgs, summary];\n} catch (err) {\n  node.status({ fill: 'red', shape: 'ring', text: 'dispatch error' });\n  node.warn('[ATTACK-DISPATCH] ' + err.message);\n  return [null, { payload: { event: 'attack_dispatch_error', error: err.message, input: msg.payload } }];\n}\n",
+    "x": 720,
+    "y": 940,
+    "wires": [
+      [
+        "mqtt_out_c"
+      ],
+      [
+        "debug_log_c"
+      ]
+    ]
+  },
+  {
+    "id": "mqtt_out_c",
+    "type": "mqtt out",
+    "z": "flow_48h_scenario",
+    "name": "Publish Attack",
+    "topic": "",
+    "qos": "0",
+    "retain": "",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "mqtt_broker_cfg",
+    "x": 950,
+    "y": 920,
+    "wires": []
+  },
+  {
+    "id": "debug_log_c",
+    "type": "debug",
+    "z": "flow_48h_scenario",
+    "name": "Train Log",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": true,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "payload.event",
+    "statusType": "msg",
+    "x": 770,
+    "y": 1020,
+    "wires": []
+  }
+]
