@@ -59,16 +59,15 @@ ATTACK_LABELS = {
     'disconnect':  'Disconnect',
 }
 
-BASE = '/Users/bourreauhugo/Documents/2024_bourreau_hugo/07_working_directory/03_Productions/Writings/2.5 dataset/implementation'
-OUT  = '/Users/bourreauhugo/Documents/2024_bourreau_hugo/07_working_directory/03_Productions/Writings/2.5 dataset/paper/figures'
-
+BASE = './data'
+OUT  = './output'
 
 import os; os.makedirs(OUT, exist_ok=True)
 
 # ─── Load data ────────────────────────────────────────────────────────────────
 print("Loading datasets...")
-df_train = pd.read_csv(f'{BASE}/database/train_12h/power_readings_train.csv', parse_dates=['event_time'])
-df_test  = pd.read_csv(f'{BASE}/database/test_48h/power_readings_trimmed.csv',  parse_dates=['event_time'])
+df_train = pd.read_csv(f'{BASE}/train_12h/power_readings_train.csv', parse_dates=['event_time'])
+df_test  = pd.read_csv(f'{BASE}/test_48h/power_readings_trimmed.csv',  parse_dates=['event_time'])
 
 df_all   = pd.concat([df_train, df_test], ignore_index=True)
 df_all   = df_all.sort_values('event_time').reset_index(drop=True)

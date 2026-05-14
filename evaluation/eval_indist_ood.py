@@ -14,12 +14,12 @@ import xgboost as xgb
 import warnings
 warnings.filterwarnings('ignore')
 
-BASE = '/Users/bourreauhugo/Documents/2024_bourreau_hugo/07_working_directory/03_Productions/Writings/2.5 dataset/implementation'
+BASE = './data'
 
 print("Loading datasets...")
-df_train = pd.read_csv(f'{BASE}/database/train_12h/power_readings_train.csv',
+df_train = pd.read_csv(f'{BASE}/train_12h/power_readings_train.csv',
                        parse_dates=['event_time'])
-df_test  = pd.read_csv(f'{BASE}/database/test_48h/power_readings_trimmed.csv',
+df_test  = pd.read_csv(f'{BASE}/test_48h/power_readings_trimmed.csv',
                        parse_dates=['event_time'])
 print(f"  12h (train): {len(df_train):,}   48h (test): {len(df_test):,}")
 

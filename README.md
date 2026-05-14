@@ -49,7 +49,14 @@ To run the evaluation scripts and recreate the figures:
    source venv/bin/activate
    pip install -r requirements.txt
    ```
-2. Download the datasets from the public repository and place them in the appropriate directory.
+2. Download the datasets from the public repository and organize them in a `data` folder inside the `evaluation` directory as follows:
+   ```text
+   evaluation/data/
+   ├── train_12h/
+   │   └── power_readings_train.csv
+   └── test_48h/
+       └── power_readings_trimmed.csv
+   ```
 3. Run the evaluation script:
    ```bash
    python eval_indist_ood.py
