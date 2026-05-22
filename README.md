@@ -2,7 +2,7 @@
 
 This repository contains the source code, infrastructure configuration, and evaluation scripts for the paper **"PowerTrace-IoT: An Empirical Power-Consumption Dataset for Physical-Layer Attack Detection in Distributed IoT Sensor Networks"**.
 
-**Note:** The full datasets (raw traces, SQL dumps, and cleaned CSVs) are too large for GitHub and are hosted separately on [Zenodo / HuggingFace] (Link to be added). This repository contains the reproducible environment and scripts.
+**Note:** The full datasets (raw traces, SQL dumps, and cleaned CSVs) are too large for GitHub and are hosted separately on Zenodo: [10.5281/zenodo.20347924](https://doi.org/10.5281/zenodo.20347924). This repository contains the reproducible environment and scripts.
 
 ## Repository Structure
 
