@@ -3,3 +3,9 @@ __pycache__/
 *.pyc
 venv/
 .DS_Store
+
+# Generated evaluation artefacts — do not commit large binaries or CSVs
+evaluation/cache/
+evaluation/output_figures/
+evaluation/data/
+*.npy
