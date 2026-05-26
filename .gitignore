@@ -9,6 +9,6 @@ evaluation/cache/
 evaluation/output_figures/
 *.npy
 
-# Ignore large CSV datasets while keeping directory structure and README tracked
+# Ignore CSV datasets
 evaluation/data/train_12h/*.csv
 evaluation/data/test_48h/*.csv
