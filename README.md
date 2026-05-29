@@ -86,6 +86,8 @@ evaluation/data/
     └── power_readings_trimmed.csv
 ```
 
+*Note on Data Cleaning:* If you are building from the raw database dumps, use `infrastructure/database/clean_dataset.py` to apply physical-constraint imputation before evaluation. It uses a rolling median to filter unphysical ADC artefacts where `absolute_current_ma < 40` or `absolute_current_ma > 250`.
+
 ### 3 — Run the ML evaluation pipeline
 
 ```bash

@@ -156,10 +156,7 @@ def generate_data_figures(
     # ── Fig 1: 48-hour power timeline ──────────────────────────────────────
     print('Generating Fig 1: 48h Power Timeline...')
     fig, axes = plt.subplots(5, 1, figsize=(7, 4.8), sharex=True)
-    fig.suptitle(
-        'Absolute Current Consumption per Node — 48-Hour Evaluation Dataset',
-        fontsize=10, y=1.01,
-    )
+    
 
     for ax, nid in zip(axes, nodes):
         df_n   = df_test[df_test['node_id'] == nid].copy()
@@ -174,7 +171,7 @@ def generate_data_figures(
             atk_df = df_n[df_n['attack_state'] == atk]
             if not atk_df.empty:
                 ax.scatter(atk_df['event_time'], atk_df['absolute_current_ma'],
-                           c=color, s=1.5, zorder=2, alpha=0.85, linewidths=0)
+                           c=color, s=12.0, zorder=3, alpha=1.0, linewidths=0.4)
         ax.set_ylabel(f'N{nid}\n(mA)', rotation=0, labelpad=30, va='center')
         ax.set_ylim(0, 180)
         ax.yaxis.set_major_locator(MaxNLocator(3))
@@ -296,37 +293,67 @@ def generate_data_figures(
 
     # ── Fig 6: Attack-onset zoomed windows ─────────────────────────────────
     print('Generating Fig 6: Attack Onset Trace...')
-    fig, axes = plt.subplots(2, 2, figsize=(7, 4.5), sharex=False)
+    fig, axes = plt.subplots(2, 2, figsize=(8, 5.5), sharex=False)
     axes = axes.flatten()
     zoom_attacks = ['ddos', 'exhaustion', 'tampering', 'spoofing_dht']
+    NODE_COLORS = {1: '#1f77b4', 2: '#ff7f0e', 3: '#2ca02c', 4: '#d62728', 5: '#9467bd'}
 
     for ax, atk in zip(axes, zoom_attacks):
         df_atk = df_test[df_test['attack_state'] == atk].copy()
         if df_atk.empty:
             ax.set_visible(False)
             continue
-        t_start = df_atk['event_time'].iloc[0] - pd.Timedelta(minutes=5)
-        t_end   = df_atk['event_time'].iloc[0] + pd.Timedelta(minutes=15)
-        window  = df_test[
-            (df_test['event_time'] >= t_start) & (df_test['event_time'] <= t_end)
-        ]
-        for nid in sorted(df_test['node_id'].unique()):
-            nw       = window[window['node_id'] == nid]
-            color    = plt.cm.tab10(nid - 1)
-            benign_w = nw[nw['attack_state'] == 'none']
-            atk_w    = nw[nw['attack_state'] == atk]
-            ax.plot(benign_w['event_time'], benign_w['absolute_current_ma'],
-                    color=color, linewidth=0.7, alpha=0.8)
-            ax.scatter(atk_w['event_time'], atk_w['absolute_current_ma'],
-                       color=color, s=5, zorder=3, label=f'N{nid}')
-        ax.set_title(ATTACK_LABELS.get(atk, atk))
-        ax.set_ylabel('Current (mA)')
-        ymin, ymax = ax.get_ylim()
-        ax.set_ylim(max(0, ymin - 5), min(200, ymax + 10))
+        t_start = df_atk['event_time'].min() - pd.Timedelta(minutes=5)
+        t_end   = df_atk['event_time'].min() + pd.Timedelta(minutes=15)
+        window  = df_test[(df_test['event_time'] >= t_start) & (df_test['event_time'] <= t_end)]
+        attacked_nodes = set(window[window['attack_state'] == atk]['node_id'].unique())
 
-    handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='lower center', ncol=5,
-               bbox_to_anchor=(0.5, 0.01), frameon=False)
+        for nid in sorted(df_test['node_id'].unique()):
+            nw = window[window['node_id'] == nid]
+            color = NODE_COLORS.get(nid, f'C{nid - 1}')
+            is_atk = nid in attacked_nodes
+            benign_w = nw[nw['attack_state'] == 'none']
+            atk_w = nw[nw['attack_state'] == atk]
+
+            if not benign_w.empty:
+                b_mean = benign_w['absolute_current_ma'].mean()
+                b_std = benign_w['absolute_current_ma'].std()
+                if is_atk:
+                    benign_w = benign_w[benign_w['absolute_current_ma'] <= b_mean + 2.5 * b_std]
+                
+                # Split on gaps > 5s to avoid drawing lines across attack windows
+                bw = benign_w.sort_values('event_time').reset_index(drop=True)
+                dt = bw['event_time'].diff()
+                seg_id = (dt > pd.Timedelta(seconds=5)).cumsum()
+                for _, seg in bw.groupby(seg_id):
+                    ax.plot(seg['event_time'], seg['absolute_current_ma'],
+                            color=color, linewidth=1.2 if is_atk else 0.7, alpha=0.85 if is_atk else 0.5)
+
+            if not atk_w.empty:
+                ax.scatter(atk_w['event_time'], atk_w['absolute_current_ma'],
+                           color=color, s=30 if is_atk else 12, zorder=5,
+                           alpha=1.0 if is_atk else 0.75, edgecolors='white', linewidths=0.6, label=f'N{nid}')
+
+        for nid in sorted(df_test['node_id'].unique()):
+            color = NODE_COLORS.get(nid, f'C{nid - 1}')
+            if nid not in attacked_nodes and not window[window['node_id'] == nid].empty:
+                ax.plot([], [], color=color, linewidth=1.2, label=f'N{nid}')
+
+        atk_in_window = window[window['attack_state'] == atk]
+        t_atk_end = atk_in_window['event_time'].max() if not atk_in_window.empty else t_end
+        ax.axvspan(df_atk['event_time'].min(), t_atk_end, alpha=0.55, color='#E0E0E0', zorder=1)
+
+        ax.set_title(ATTACK_LABELS.get(atk, atk), fontsize=10)
+        ax.set_ylabel('Current (mA)')
+        y_vals = window['absolute_current_ma']
+        v_max = y_vals.max()
+        q_lo = y_vals.quantile(0.0)
+        margin = max(5, (v_max - q_lo) * 0.10)
+        ax.set_ylim(max(0, q_lo - margin), v_max + margin)
+
+    legend_handles = [plt.Line2D([0], [0], color=NODE_COLORS.get(n, f'C{n - 1}'), lw=1.8, label=f'N{n}') for n in sorted(df_test['node_id'].unique())]
+    legend_handles.append(mpatches.Patch(facecolor='#E0E0E0', alpha=0.9, edgecolor='#999999', lw=0.5, label='Attack period'))
+    fig.legend(handles=legend_handles, labels=[h.get_label() for h in legend_handles], loc='lower center', ncol=6, bbox_to_anchor=(0.5, 0.01), frameon=False)
     fig.tight_layout(rect=[0, 0.06, 1, 1])
     _save('fig6_attack_onset_windows')
 
@@ -369,11 +396,8 @@ def generate_data_figures(
 
     # ── Fig 10: 12-hour training timeline ──────────────────────────────────
     print('Generating Fig 10: 12h Power Timeline...')
-    fig, axes = plt.subplots(5, 1, figsize=(7, 5.5), sharex=True)
-    fig.suptitle(
-        'Absolute Current Consumption per Node — 12-Hour Training Dataset',
-        fontsize=10, y=1.01,
-    )
+    fig, axes = plt.subplots(5, 1, figsize=(7, 4.8), sharex=True)
+    
     for ax, nid in zip(axes, nodes):
         df_n   = df_train[df_train['node_id'] == nid].copy()
         if df_n.empty:
@@ -387,14 +411,14 @@ def generate_data_figures(
             atk_df = df_n[df_n['attack_state'] == atk]
             if not atk_df.empty:
                 ax.scatter(atk_df['event_time'], atk_df['absolute_current_ma'],
-                           c=color, s=1.5, zorder=2, alpha=0.85, linewidths=0)
+                           c=color, s=12.0, zorder=3, alpha=1.0, linewidths=0.4)
         ax.set_ylabel(f'N{nid}\n(mA)', rotation=0, labelpad=30, va='center')
         ax.set_ylim(0, 180)
         ax.yaxis.set_major_locator(MaxNLocator(3))
 
     axes[-1].set_xlabel('Time (UTC)')
     fig.legend(handles=legend_patches, loc='lower center', ncol=4,
-               bbox_to_anchor=(0.5, 0.0), frameon=False)
+               bbox_to_anchor=(0.5, 0.0), frameon=False, markerscale=2)
     fig.tight_layout(rect=[0, 0.08, 1, 1])
     _save('fig10_power_timeline_12h')
 
@@ -496,7 +520,7 @@ def generate_evaluation_figures() -> None:
                 f'{val:.3f}', va='center', ha='left', fontsize=7.5)
 
     ax.set_xlabel('Feature Importance (XGBoost gain)')
-    ax.set_title('Feature Importance — Physical Attribution Model', pad=8)
+    
     ax.set_xlim(0, fi_sorted.max() * 1.18)
     ax.grid(axis='y', alpha=0)
 
