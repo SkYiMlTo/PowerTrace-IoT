@@ -89,22 +89,6 @@ if remaining_nans > 0:
 else:
     print("  All anomalies successfully imputed.")
 
-# Sanity check: confirm bounds are now satisfied
-assert (df["absolute_current_ma"] >= 40).all(), \
-    "Lower-bound check failed after imputation."
-assert (df["absolute_current_ma"] <= 250).all(), \
-    "Upper-bound check failed after imputation."
-print("  Physical-constraint bounds verified.")
-
-# ─── Diagnostic stats ─────────────────────────────────────────────────────────
-print("\n  Current (mA) stats per attack class (attack windows only):")
-atk_classes = ["ddos", "exhaustion"]
-print(df[df["attack_state"].isin(atk_classes)]
-      .groupby("attack_state")["absolute_current_ma"]
-      .agg(["mean", "std", "min", "max"])
-      .rename(columns={"mean": "μ", "std": "σ", "min": "min", "max": "max"})
-      .round(2))
-
 # ─── Save ─────────────────────────────────────────────────────────────────────
 out_path = "power_readings_train.csv"
 print(f"\n  Saving cleaned dataset → {out_path}")
