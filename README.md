@@ -114,23 +114,15 @@ If you use this dataset or code in your work, please cite:
 @inproceedings{bourreau2026powertrace,
   title     = {{PowerTrace-IoT}: An Empirical Power-Consumption Dataset for
                Physical-Layer Attack Detection in Distributed {IoT} Sensor Networks},
-  author    = {Bourreau, Hugo and others},
-  booktitle = {To come},
-  year      = {2026},
+  author    = {Bourreau, Hugo and Bouchard, K{\'{e}}vin and Pahl, Marc-Oliver and
+               Jaafar, Fehmi and Dagnat, Fabien},
+  booktitle = {Proceedings of the 28th International Conference on Information and
+               Communications Security (ICICS 2026)},
+  series    = {LNCS},
+  publisher = {Springer},
+  year      = {2026}
 }
 ```
-
-<!-- ```bibtex
-@inproceedings{bourreau2026powertrace,
-  title     = {{PowerTrace-IoT}: An Empirical Power-Consumption Dataset for
-               Physical-Layer Attack Detection in Distributed {IoT} Sensor Networks},
-  author    = {Bourreau, Hugo and others},
-  booktitle = {Proceedings of the 22nd International Conference on Information and
-               Communications Security (ICICS 2026)},
-  year      = {2026},
-}
-``` -->
-
 ---
 
 ## License
