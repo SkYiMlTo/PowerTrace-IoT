@@ -12,3 +12,4 @@ evaluation/output_figures/
 # Ignore CSV datasets
 evaluation/data/train_12h/*.csv
 evaluation/data/test_48h/*.csv
+infrastructure/nodered/data/flows_cred.json

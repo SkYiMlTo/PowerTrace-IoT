@@ -18,12 +18,12 @@
 #include <time.h>
 
 // ─── CHANGE THIS PER NODE (1-5) ─────────────────────────────────────
-#define CURRENT_NODE_ID 5
+#define CURRENT_NODE_ID 1
 
 // ─── NETWORK ────────────────────────────────────────────────────────
-const char *SSID = "SSID";
-const char *PASSWORD = "PASSWORD";
-const char *MQTT_SERVER = "[IP_ADDRESS]";
+const char *SSID = "BELL282";
+const char *PASSWORD = "CE13D4167DA5";
+const char *MQTT_SERVER = "192.168.2.185";
 const uint16_t MQTT_PORT = 1883U;
 
 // ─── PINS ───────────────────────────────────────────────────────────
@@ -41,8 +41,13 @@ typedef struct {
   float tare_v;
 } NodeCalibration;
 static const NodeCalibration CAL[6] = {
-    {0.0F, 0.0F},           {2.526757F, 2.541690F}, {2.545885F, 2.565905F},
-    {2.525538F, 2.542925F}, {2.498624F, 2.517896F}, {2.549931F, 2.568291F}};
+    {0.0F, 0.0F},
+    {2.524574F, 2.538449F}, // Node 1 (75.0 mA baseline)
+    {2.596782F, 2.610657F}, // Node 2 (75.0 mA baseline)
+    {2.522162F, 2.536037F}, // Node 3 (75.0 mA baseline)
+    {2.500281F, 2.514156F}, // Node 4 (75.0 mA baseline)
+    {2.553933F, 2.567808F}  // Node 5 (75.0 mA baseline)
+};
 static const float SENS = 0.185F;
 static const float VDR = 14.7F / 10.0F;
 static const float VSUP = 5.0F;
